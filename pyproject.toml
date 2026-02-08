@@ -1,0 +1,19 @@
+[project]
+name = "sigsum-breakglass"
+license = "Apache-2.0"
+readme = "README.md"
+authors = [
+    { name = "Florian Larysch", email = "fl@n621.de" }
+]
+version = "0.0.1"
+requires-python = ">=3.11"
+dependencies = [
+    "pynacl>=1.6.2",
+]
+
+[project.scripts]
+sigsum-breakglass = "sigsum_breakglass.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
