@@ -95,6 +95,11 @@ class Ed25519Key:
         blob = b64dec(blob)
         return cls.from_blob(blob, comment)
 
+    @classmethod
+    def from_file(cls, path: Path) -> Self:
+        text = path.read_text().strip()
+        return cls.from_line(text)
+
     def __str__(self) -> str:
         line = f'ssh-ed25519 {b64enc(self.blob)}'
 

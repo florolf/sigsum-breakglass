@@ -54,8 +54,7 @@ def do_make_policy(args):
 
     names = []
     for path in args.pubkey:
-        text = path.read_text().strip()
-        key = ssh.Ed25519Key.from_line(text)
+        key = ssh.Ed25519Key.from_file(path)
 
         name = key.comment
         hexkey = key.pubkey.hex()
@@ -102,8 +101,7 @@ def do_make_request(args):
 
     agent = ssh.Agent()
 
-    text = args.leaf_key.read_text().strip()
-    key = ssh.Ed25519Key.from_line(text)
+    key = ssh.Ed25519Key.from_file(args.leaf_key)
 
     if args.file:
         data_hash = sha256(args.file.read_bytes())
@@ -140,11 +138,11 @@ def check_leaf(leaf_key: ssh.Ed25519Key, leaf: dict[str, str]):
 def do_sign_request(args):
     request = json.loads(args.request.read_text())
 
-    leaf_key = ssh.Ed25519Key.from_line(args.leaf_key.read_text().strip())
+    leaf_key = ssh.Ed25519Key.from_file(args.leaf_key)
     check_leaf(leaf_key, request)
 
     agent = ssh.Agent()
-    signing_key = ssh.Ed25519Key.from_line(args.signing_key.read_text().strip())
+    signing_key = ssh.Ed25519Key.from_file(args.signing_key)
 
     root_hash = get_root_hash(request)
     checkpoint = make_checkpoint(root_hash)
