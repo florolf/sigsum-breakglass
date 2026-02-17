@@ -11,13 +11,17 @@ Threshold signature schemes exist - even ones like [FROST](https://www.rfc-edito
 `sigsum-breakglass` is a tool for managing such a mechanism.
 
 ## Usage
-### Step 0: Pick your key custodians
+### Step 1: Generate a breakglass key
 
-Pick the people you'd like to rely on for the threshold signatures. Each of them needs to generate an Ed25519 key and supply the public key to you in the standard OpenSSH format (i.e. `ssh-ed25519 AAAA...`). `sigsum-breakglass` uses an SSH agent for all signature operations, so hardware-backed keys are possible if there is corresponding agent support. Note that `sk-ssh-ed25519` (i.e. FIDO tokens) will *not* work as those aren't plain Ed25519 signatures we can reuse in a different protocol.
+Generate a specific Ed25519 key that you will use to authorize breakglass operations. This key can and should be stored offline - hopefully you'll never have to use it. `sigsum-breakglass` uses an SSH agent for all its signature operations (including the ones described below), so hardware-backed keys are possible if there is corresponding agent support. Note that `sk-ssh-ed25519` (i.e. FIDO tokens) will *not* work as those aren't plain Ed25519 signatures we can reuse in a different protocol.
 
-You will also need to tell them about the signing pubkey (i.e. the `-k` argument to `sigsum-verify`) you intend to use.
+### Step 2: Pick your key custodians
 
-### Step 1: Generate a policy
+Pick the people you'd like to rely on for the threshold signatures. Each of them needs to generate an Ed25519 key and supply the public key to you in the standard OpenSSH format (i.e. `ssh-ed25519 AAAA...`).
+
+You will also need to tell them the public key of the breakglass key you generated in step 1.
+
+### Step 3: Generate a policy
 
 First, install this package into a virtualenv using whatever tool you like, e.g. `pip install git+https://github.com/florolf/sigsum-breakglass`.
 
@@ -26,60 +30,78 @@ The, use the `make-policy` sub-command to generate a policy with a threshold and
 ```
 $ sigsum-breakglass make-policy 2 custodian1.pub custodian2.pub custodian3.pub > policy
 $ cat policy
-# Dummy log key, corresponding to an all-zero private key
-log 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
+# key name: breakglass
+log 7e55283748388e2fa565346516d848ef1195cad5c83816a4b6e24344cfc717e9
 
-witness custodian1 3311d6d2cf54689d0c714566032fb3e7e22bc09a81203dbe42806f5a96a1eb10
-witness custodian2 1d0c7f2a8885d27f3a6edf87bd500cb92ec444c745dce08d7400e777b2e990a9
-witness custodian3 b954ca8c73ae052f379a4b342a113ef63e4e6754a31c1b42c8ec4542884e4679
+witness cosigner1 0356a86448e731c962782b30563d9d5c807f7956c4c361cf48ac75c6bd7fce0f
+witness cosigner2 364ced2caf85261de3c91170f137c0bf8688fda3293372d66f02d6b7f4bab79c
+witness cosigner3 ce80e6540b37b34c3b15a574ad82e1ebb5b7cae54f5335fb9fa960f5b89dd660
 
-group main 2 custodian1 custodian2 custodian3
+group main 2 cosigner1 cosigner2 cosigner3
 quorum main
 ```
 
 The witness names are derived from the comment field of the pubkey file if it exists and is a valid witness name according to the [policy specification](https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/v0.14.0/doc/policy.md). Otherwise the hex-encoded public key is also used as the name.
 
-Use this policy as the fallback policy in your verifier.
+You can either use this policy as a separate fallback policy in your verifier or merge it with your regular Sigsum policy. There are trade-offs to both options, which are discussed below.
 
-### Step 2: Generate a signing request
+### Step 3: Generate a pseudo-leaf
 
-If you need to make use of the breakglass mechanism, generate a signing request based on your regular signing key (which needs to be present in the SSH agent determined by the `SSH_AUTH_SOCK` environment variable) and the data to be signed, as with a regular `sigsum-submit` operation:
+Generate a leaf data structure using your regular artifact signing key - this is exactly equivalent to the leaf data structure that `sigsum-submit` generates. Your signing key needs to be present in the SSH agent determined by the `SSH_AUTH_SOCK` environment variable.
 
 ```
-$ sigsum-breakglass make-request --hash 6f024c51ca5d0b6568919e134353aaf1398ff090c92f6173f5ce0315fa266b93 signing-key.pub > request.json
-$ cat request.json
+$ sigsum-breakglass make-leaf --hash 6f024c51ca5d0b6568919e134353aaf1398ff090c92f6173f5ce0315fa266b93 signing-key.pub > leaf.json
+$ cat leaf.json
 {
  "checksum": "465283372667265e1f9515813be447692a3ab09f879bb6ded5a826872550fd39",
- "keyhash": "e3e148408dee5d1e71dbdfc08f5b0373da0ceb55d8e7f8ecc64c66794c5a5e5b",
- "signature": "45565601e0c789fdbc806f7b7e3c7910cf68904a18261c991546df057faff869c0ebeeb789faefee68a1e7be7cf1e519c0f697f6f2b1208b759cbb4b3a30120c"
+ "keyhash": "b9b5ca4ef790ee2371cf51e787a702545e4328f5aa7575ff8baf162af7446f7c",
+ "signature": "078335c18fb08488292ccc45a175bf23ab720c888d0ca5c55eea52289696acb3cfe3a723de5eb1e685d6b44a0d2021dc35d5d46ccf9f9a9fd5abf3cabfc9ba03"
 }
 ```
 
-You can either give the SHA256 hash of the message to be signed directly (using `--hash` as shown above) or by using `--file`, which hashes the given file to produce the hash.
+### Step 4: Generate a signing request
+
+Using your breakglass key, transform the leaf into a signing request. This is a separate step so that it can optionally be done on another machine.
+
+```
+$ sigsum-breakglass make-request breakglass.pub leaf.json > request.json
+$ cat request.json
+{
+ "leaf": {
+  "checksum": "465283372667265e1f9515813be447692a3ab09f879bb6ded5a826872550fd39",
+  "keyhash": "b9b5ca4ef790ee2371cf51e787a702545e4328f5aa7575ff8baf162af7446f7c",
+  "signature": "078335c18fb08488292ccc45a175bf23ab720c888d0ca5c55eea52289696acb3cfe3a723de5eb1e685d6b44a0d2021dc35d5d46ccf9f9a9fd5abf3cabfc9ba03"
+ },
+ "root": {
+  "keyhash": "415e81ad656a4d1bd36f8f8d07703ed2bf0d00bf9e1a7e5c1f3fa2f1a90e7e61",
+  "signature": "69e5d513350061558350726bb8208e4801ca2a0e04599bf325a00a3566001818d64ceff441814911ea9e9a8920dab43848fc2cbb5aed01a51fd149c55c005501"
+ }
+}
+```
 
 Distribute this request to your custodians.
 
-### Step 3: Generate cosignatures
+### Step 5: Generate cosignatures
 
-Each custodian now carefully considers whether to cosign this request. While `sign-request` verifies the leaf signature made in step 2, they might still want to reach out to you through some other channel to see what is going on or request the signed data so they can publish it somewhere.
+Each custodian now carefully considers whether to cosign this request. While `sign-request` verifies the root signature made in step 3, they might still want to reach out to you through some other channel to see what is going on or request the signed data so they can publish it somewhere.
 
 Once they are ready to cosign the request, they execute:
 
 ```
-$ sigsum-breakglass sign-request signing-key.pub custodian1.pub request.json > cosig1.json
+$ sigsum-breakglass sign-request breakglass.pub custodian1.pub request.json > cosig1.json
 $ cat cosig1.json
 {
- "keyhash": "2017a6fee25d302f100e9f2e31a3bdc0f0c68b4d5b380ac5f346c0869e96ac91",
- "signature": "22b6c64f0782f6c4ecf27a98cbe07c1c0ccab16abab545d824c3281ed53fd77fe3c26d46eb361c10f09f82e797c51a4be0cd5bd3fa0b77903560ecfa26291105",
- "timestamp": 1770570534
+ "keyhash": "f5762bab89791fd55deb53fa2faec246ef03f2d823ba276237612cb6ec55969a",
+ "signature": "39d88fc30e8a1df0df5c7b339fffbe1e1f34f1f3b67885db4ef47248f4f90dd77fe070ecefb8e9eba0a2d63781a05b2a7e18b96dfc9577478f2e4dc01e7f1005",
+ "timestamp": 1771286008
 }
 ```
 
-Where `signing-key.pub` is the public key corresponding to the leaf signing key used in step 2 and `custodian1.pub` is their cosigning public key (the latter needs to be present in their SSH agent).
+Where `breakglass.pub` is the breakglass public key from step 1 and `custodian1.pub` is their cosigning public key (the latter needs to be present in their SSH agent).
 
 They then return the generated data back to you.
 
-### Step 4: Merge everything into a proof
+### Step 6: Merge everything into a proof
 
 Use the original request and the cosignatures to construct a faux Sigsum proof:
 
@@ -87,14 +109,14 @@ Use the original request and the cosignatures to construct a faux Sigsum proof:
 $ sigsum-breakglass make-proof request.json cosig1.json cosig2.json > proof
 $ cat proof
 version=2
-log=139e3940e64b5491722088d9a0d741628fc826e09475d341a780acde3c4b8070
-leaf=e3e148408dee5d1e71dbdfc08f5b0373da0ceb55d8e7f8ecc64c66794c5a5e5b 45565601e0c789fdbc806f7b7e3c7910cf68904a18261c991546df057faff869c0ebeeb789faefee68a1e7be7cf1e519c0f697f6f2b1208b759cbb4b3a30120c
+log=415e81ad656a4d1bd36f8f8d07703ed2bf0d00bf9e1a7e5c1f3fa2f1a90e7e61
+leaf=b9b5ca4ef790ee2371cf51e787a702545e4328f5aa7575ff8baf162af7446f7c 078335c18fb08488292ccc45a175bf23ab720c888d0ca5c55eea52289696acb3cfe3a723de5eb1e685d6b44a0d2021dc35d5d46ccf9f9a9fd5abf3cabfc9ba03
 
 size=1
-root_hash=5e90f2dadc86a17e8522075d76b91d0cd2e23907b9bc07d990a7ebfd6b29316d
-signature=1101cdcd2a6b95bfa6faf598d1db9fbadb27da44a4e2b96f1341b84b561e0cebe4df826f3f85aaf0b49b32958870d9757050c01981e357ca4ee31dbfa1d23a03
-cosignature=2017a6fee25d302f100e9f2e31a3bdc0f0c68b4d5b380ac5f346c0869e96ac91 1770570534 22b6c64f0782f6c4ecf27a98cbe07c1c0ccab16abab545d824c3281ed53fd77fe3c26d46eb361c10f09f82e797c51a4be0cd5bd3fa0b77903560ecfa26291105
-cosignature=1ad6c7063443ee851dcff1aa2a35ee3740c8ed0e3ba7b42d9f5976fbcd719fbe 1770570718 f94e8cd7bc9ed799a402a0d168ddb1859fc232394b96f0170d4692747b7584a27c113abaa614a8b588a9f8dbf5da0eee25de5f659c1ff098727b8b0b4d15150a
+root_hash=12594afb57e40a283bd03afac74641a032065cd59e098278920f55dae9d6f505
+signature=69e5d513350061558350726bb8208e4801ca2a0e04599bf325a00a3566001818d64ceff441814911ea9e9a8920dab43848fc2cbb5aed01a51fd149c55c005501
+cosignature=f5762bab89791fd55deb53fa2faec246ef03f2d823ba276237612cb6ec55969a 1771286008 39d88fc30e8a1df0df5c7b339fffbe1e1f34f1f3b67885db4ef47248f4f90dd77fe070ecefb8e9eba0a2d63781a05b2a7e18b96dfc9577478f2e4dc01e7f1005
+cosignature=500dacf19d1b689f7bf2641283bdda2e37b568d12a420145eaa095743c6a7eb2 1771286014 abf47128ba667057037124abf1c620ed912c2e1ac8921739094ec8ee19f1483f8132eb9f660a4000493ea8ee7502f13bb836486c45c5869d50015e169b49030f
 ```
 
 In this example, we were only able to obtain two cosignatures, but this is enough according to the policy. You can now check that this proof verifies using `sigsum-verify`:
@@ -105,6 +127,46 @@ $ echo $?
 0
 ```
 
-## Internals
+## Design considerations
 
-There is not much magic going on here. We fake a single-entry log since the verifier is normally stateless anyway, so we can also do this more than once. The log key is a hardcoded dummy key since making it changeable wouldn't add any useful functionality or security.
+There is not much magic going on here. We fake a single-entry log since the verifier is normally stateless anyway, so we can also do this more than once.
+
+Previously we didn't have a separate breakglass key, but rather used a dummy key and relied on the leaf signature key itself for authentication towards the cosigners. However, this has downsides when merging the breakglass cosigners into the main policy used by the application (see below). Additionally, this meant an attacker could have triggered a breakglass announcement by just reusing a regular logged signature and submitting it to the cosigners (if they just relied on the signature as a means for authenticating a breakglass request and not reached out to the first party out-of-band), which could be used to cause confusion.
+
+## Policy considerations
+
+There are two ways to integrate `sigsum-breakglass` into the verification process: Running a fallback verification step or merging the policy with your regular one.
+
+Running a fallback verification step means first checking a proof against your regular policy. If that fails, you run the verifier again with the breakglass policy produced in step 3 above. The advantage is that this clearly separates both domains both cryptographically and conceptually (when using this as part of a firmware update mechanism, the device could display a warning when the breakglass mechanism gets triggered). The downside is that this is an extra step, which might be tedious in flows where people are manually verifying proofs. Furthermore, depending on the application, it could be seen as slightly "backdoorsy" and the less-well-trodden path might be brittle when the system gets modified.
+
+Another approach is to merge both policies by adding the breakglass dummy log and the breakglass cosigners as another toplevel group to the main policy. E.g. in the case of the above example and the `sigsum-generic-2025-1` named policy:
+
+```
+log 0ec7e16843119b120377a73913ac6acbc2d03d82432e2c36b841b09a95841f25 https://seasalp.glasklar.is
+log f00c159663d09bbda6131ee1816863b6adcacfe80b0b288000b11aba8fe38314 https://ginkgo.tlog.mullvad.net
+
+witness witness.glasklar.is            b2106db9065ec97f25e09c18839216751a6e26d8ed8b41e485a563d3d1498536
+witness witness.mullvad.net            15d6d0141543247b74bab3c1076372d9c894f619c376d64b29aa312cc00f61ad
+witness tillitis.se/tillitis-witness-1 076be8c9ee7ea60916f0df3608c945d7730082ecb37749dad2c9ed339fea770c
+
+group sigsum-generic-2025-1 2 witness.glasklar.is witness.mullvad.net tillitis.se/tillitis-witness-1
+
+# breakglass
+log 7e55283748388e2fa565346516d848ef1195cad5c83816a4b6e24344cfc717e9
+
+witness cosigner1 0356a86448e731c962782b30563d9d5c807f7956c4c361cf48ac75c6bd7fce0f
+witness cosigner2 364ced2caf85261de3c91170f137c0bf8688fda3293372d66f02d6b7f4bab79c
+witness cosigner3 ce80e6540b37b34c3b15a574ad82e1ebb5b7cae54f5335fb9fa960f5b89dd660
+
+group breakglass 2 cosigner1 cosigner2 cosigner3
+
+group quorum-rule any sigsum-generic-2025-1 breakglass
+
+quorum quorum-rule
+```
+
+This has the advantage of being completely contained in the regular Sigsum verification flow and being very upfront about the breakglass mechanism in the policy you are distributing/people will look at.
+
+However, since a Sigsum verifier considers all logs in a given policy to be equal, this opens up a potential vector of attack: If somebody (either you or an attack who has stolen your breakglass key) can convince the regular witnesses to cosign a breakglass checkpoint, they will end up with a valid proof that will stay secret (since nobody can monitor the fake breakglass log and unlike the breakglass cosigners which are by definition required to announce their signature operations publicly, regular witnesses are normally silent).
+
+One way this could happen is if enough of the regular witnesses in your policy are participating in the [witness network](https://witness-network.org/) - an attacker could simply submit the breakglass log key for participation.
