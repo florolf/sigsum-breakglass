@@ -25,10 +25,10 @@ You will also need to tell them the public key of the breakglass key you generat
 
 First, install this package into a virtualenv using whatever tool you like, e.g. `pip install git+https://github.com/florolf/sigsum-breakglass`.
 
-The, use the `make-policy` sub-command to generate a policy with a threshold and a given set of custodians:
+The, use the `make-policy` sub-command to generate a policy with your breakglass key, a threshold and a given set of custodians:
 
 ```
-$ sigsum-breakglass make-policy 2 custodian1.pub custodian2.pub custodian3.pub > policy
+$ sigsum-breakglass make-policy breakglass.pub 2 custodian1.pub custodian2.pub custodian3.pub > policy
 $ cat policy
 # key name: breakglass
 log 7e55283748388e2fa565346516d848ef1195cad5c83816a4b6e24344cfc717e9
