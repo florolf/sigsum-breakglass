@@ -14,8 +14,6 @@ from .utils import sha256, b64enc
 
 logger = logging.getLogger(__name__)
 
-FAKE_LOG_KEY = SigningKey(bytes(32))
-
 def build_parser():
     parser = argparse.ArgumentParser(prog="sigsum-breakglass")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
@@ -23,16 +21,21 @@ def build_parser():
     subcommands = parser.add_subparsers(title="subcommands", dest="command", required=True)
 
     subparser = subcommands.add_parser("make-policy", help="Generate policy from given cosigners")
+    subparser.add_argument("breakglass_key", type=Path, help="Breakglass SSH public key file")
     subparser.add_argument("threshold", type=int, help="Threshold for the policy")
-    subparser.add_argument("pubkey", nargs="+", type=Path, help="SSH public key file")
+    subparser.add_argument("pubkey", nargs="+", type=Path, help="Cosigner SSH public key file")
 
-    subparser = subcommands.add_parser("make-request", help="Generate a signing request")
+    subparser = subcommands.add_parser("make-leaf", help="Generate a leaf")
     subparser.add_argument("--file", type=Path, help="File to sign")
     subparser.add_argument("--hash", type=str, help="Hash to sign")
     subparser.add_argument("leaf_key", type=Path, help="SSH public key file for leaf signing key")
 
+    subparser = subcommands.add_parser("make-request", help="Generate signing request from a leaf")
+    subparser.add_argument("breakglass_key", type=Path, help="Breakglass SSH public key file")
+    subparser.add_argument("leaf", type=Path, help="SSH public key file for leaf signing key")
+
     subparser = subcommands.add_parser("sign-request", help="Generate a cosignature for a request")
-    subparser.add_argument("leaf_key", type=Path, help="SSH public key file for verifying the request")
+    subparser.add_argument("breakglass_key", type=Path, help="Breakglass SSH public key file")
     subparser.add_argument("signing_key", type=Path, help="SSH public key file for cosignature key")
     subparser.add_argument("request", type=Path, help="Request to sign")
 
@@ -48,8 +51,10 @@ def do_make_policy(args):
         print(f'threshold {args.threshold} is larger than number of supplied pubkeys ({len(args.pubkey)})', file=sys.stderr)
         sys.exit(1)
 
-    print('# Dummy log key, corresponding to an all-zero private key')
-    print('log %s' % FAKE_LOG_KEY.verify_key.encode().hex())
+    log_key = ssh.Ed25519Key.from_file(args.breakglass_key)
+    if log_key.comment:
+        print(f'# key name: {log_key.comment}')
+    print('log %s' % log_key.pubkey.hex())
     print('')
 
     names = []
@@ -82,15 +87,15 @@ def get_root_hash(leaf: dict[str, str]) -> bytes:
     return sha256(b'\x00' + leaf_raw)
 
 
-def make_checkpoint(root_hash: bytes) -> bytes:
-    checkpoint = 'sigsum.org/v1/tree/' + sha256(FAKE_LOG_KEY.verify_key.encode()).hex() + '\n'
+def make_checkpoint(log_key: ssh.Ed25519Key, root_hash: bytes) -> bytes:
+    checkpoint = 'sigsum.org/v1/tree/' + sha256(log_key.pubkey).hex() + '\n'
     checkpoint += '1\n'
     checkpoint += b64enc(root_hash) + '\n'
 
     return checkpoint.encode()
 
 
-def do_make_request(args):
+def do_make_leaf(args):
     if args.file and args.hash:
         print('cannot specify both --file and --hash', file=sys.stderr)
         sys.exit(1)
@@ -122,30 +127,43 @@ def do_make_request(args):
     print(json.dumps(request, sort_keys = True, indent = True))
 
 
-def check_leaf(leaf_key: ssh.Ed25519Key, leaf: dict[str, str]):
-    if leaf['keyhash'] != sha256(leaf_key.pubkey).hex():
-        print('request keyhash does not match leaf key', file=sys.stderr)
-        sys.exit(1)
+def do_make_request(args):
+    leaf = json.loads(args.leaf.read_text())
 
-    leaf_data = b'sigsum.org/v1/tree-leaf\x00' + bytes.fromhex(leaf['checksum'])
-    try:
-        leaf_key.verify(leaf_data, bytes.fromhex(leaf['signature']))
-    except Exception as e:
-        print(f'failed to verify leaf signature: {e}', file=sys.stderr)
-        sys.exit(1)
+    agent = ssh.Agent()
+
+    key = ssh.Ed25519Key.from_file(args.breakglass_key)
+    root_hash = get_root_hash(leaf)
+    checkpoint = make_checkpoint(key, root_hash)
+
+    signature = agent.sign(key, checkpoint)
+
+    request = {
+        'leaf': leaf,
+        'root': {
+            'keyhash': sha256(key.pubkey).hex(),
+            'signature': signature.hex()
+        }
+    }
+
+    print(json.dumps(request, sort_keys = True, indent = True))
 
 
 def do_sign_request(args):
     request = json.loads(args.request.read_text())
 
-    leaf_key = ssh.Ed25519Key.from_file(args.leaf_key)
-    check_leaf(leaf_key, request)
+    breakglass_key = ssh.Ed25519Key.from_file(args.breakglass_key)
+    if request['root']['keyhash'] != sha256(breakglass_key.pubkey).hex():
+        print('request keyhash does not match breakglass key', file=sys.stderr)
+        sys.exit(1)
+
+    root_hash = get_root_hash(request['leaf'])
+    checkpoint = make_checkpoint(breakglass_key, root_hash)
+
+    breakglass_key.verify(checkpoint, bytes.fromhex(request['root']['signature']))
 
     agent = ssh.Agent()
     signing_key = ssh.Ed25519Key.from_file(args.signing_key)
-
-    root_hash = get_root_hash(request)
-    checkpoint = make_checkpoint(root_hash)
 
     timestamp = int(time.time())
     statement = f"cosignature/v1\ntime {timestamp}\n".encode() + checkpoint
@@ -163,18 +181,14 @@ def do_sign_request(args):
 def do_make_proof(args):
     request = json.loads(args.request.read_text())
 
-    root_hash = get_root_hash(request)
-    checkpoint = make_checkpoint(root_hash)
-    signature = FAKE_LOG_KEY.sign(checkpoint).signature
-
     print("version=2")
-    print(f"log={sha256(FAKE_LOG_KEY.verify_key.encode()).hex()}")
-    print(f"leaf={request['keyhash']} {request['signature']}")
+    print(f"log={request['root']['keyhash']}")
+    print(f"leaf={request['leaf']['keyhash']} {request['leaf']['signature']}")
     print('')
 
     print('size=1')
-    print(f'root_hash={root_hash.hex()}')
-    print(f'signature={signature.hex()}')
+    print(f'root_hash={get_root_hash(request['leaf']).hex()}')
+    print(f'signature={request['root']['signature']}')
 
     for path in args.cosignature:
         cosig = json.loads(path.read_text())
@@ -191,6 +205,8 @@ def main():
     match args.command:
         case 'make-policy':
             do_make_policy(args)
+        case 'make-leaf':
+            do_make_leaf(args)
         case 'make-request':
             do_make_request(args)
         case 'sign-request':
